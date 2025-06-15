@@ -161,6 +161,18 @@ jobs:
         # Give logs a moment to start streaming
         sleep 2
         
+        # Wait for metrics to be collected (Victoria Metrics needs time to scrape)
+        echo "Waiting 60 seconds for metrics to be collected..."
+        sleep 60
+        
+        # Debug: Check if metrics are available
+        echo "=== Checking metrics availability ==="
+        if [[ "${{ matrix.metrics-backend }}" == "prometheus" ]]; then
+          kubectl exec -n monitoring deployment/prometheus-kube-prometheus-operator -- wget -q -O- "http://prometheus-kube-prometheus-prometheus:9090/api/v1/query?query=kubelet_volume_stats_used_bytes" | grep -o '"result":\[[^]]*\]' || echo "No volume metrics found"
+        else
+          kubectl exec -n monitoring deployment/vmagent-victoria-metrics-agent -- wget -q -O- "http://victoria-metrics-victoria-metrics-cluster-vmselect:8481/select/0/prometheus/api/v1/query?query=kubelet_volume_stats_used_bytes" | grep -o '"result":\[[^]]*\]' || echo "No volume metrics found"
+        fi
+        
         # Run the E2E tests
         python .github/scripts/e2e-test.py
         TEST_EXIT_CODE=$?

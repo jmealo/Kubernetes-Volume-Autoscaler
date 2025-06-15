@@ -14,7 +14,7 @@ metadata:
   annotations:
     volume.autoscaler.kubernetes.io/scale-above-percent: "70"
     volume.autoscaler.kubernetes.io/scale-up-percent: "150"
-    volume.autoscaler.kubernetes.io/scale-up-max-size: "100Gi"
+    volume.autoscaler.kubernetes.io/scale-up-max-size: "107374182400"
 spec:
   accessModes:
     - ReadWriteOnce
@@ -33,7 +33,7 @@ metadata:
     volume-autoscaler: "true"
   annotations:
     volume.autoscaler.kubernetes.io/scale-above-percent: "80"
-    volume.autoscaler.kubernetes.io/scale-up-min-increment: "2Gi"
+    volume.autoscaler.kubernetes.io/scale-up-min-increment: "2147483648"
 spec:
   accessModes:
     - ReadWriteOnce
