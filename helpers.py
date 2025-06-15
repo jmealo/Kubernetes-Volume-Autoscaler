@@ -41,6 +41,7 @@ PROMETHEUS_VERSION = "0.0.0"                                                    
 VERBOSE = True if getenv('VERBOSE', "false").lower() == "true" else False        # If we want to verbose mode
 VICTORIAMETRICS_COMPAT = True if getenv('VICTORIAMETRICS_MODE', "false").lower() == "true" else False # Whether to skip the prometheus check and assume victoriametrics
 SCOPE_ORGID_AUTH_HEADER = getenv('SCOPE_ORGID_AUTH_HEADER') or ''                # If we want to use Mimir or AgentMode which requires an orgid header.  See: https://grafana.com/docs/mimir/latest/references/http-api/#authentication
+STATEFULSET_ANNOTATION_SYNC = True if getenv('STATEFULSET_ANNOTATION_SYNC', "true").lower() == "true" else False # Whether to sync StatefulSet volumeClaimTemplate annotations to PVCs
 
 
 # Simple helper to pass back
@@ -60,6 +61,7 @@ def get_settings_for_prometheus_metrics():
         'prometheus_version_detected': PROMETHEUS_VERSION,
         'http_timeout_seconds': str(HTTP_TIMEOUT),
         'verbose_enabled': "true" if VERBOSE else "false",
+        'statefulset_annotation_sync': "true" if STATEFULSET_ANNOTATION_SYNC else "false",
     }
 
 # Set headers if desired from above
@@ -150,6 +152,7 @@ def printHeaderAndConfiguration():
     print("     HTTP Timeouts for k8s/prom: {} seconds".format(HTTP_TIMEOUT))
     print("           VictoriaMetrics mode: {}".format("ENABLED" if VICTORIAMETRICS_COMPAT else "disabled"))
     print("X-Scope-OrgID Header for Cortex: {}".format(SCOPE_ORGID_AUTH_HEADER if len(SCOPE_ORGID_AUTH_HEADER) else "disabled"))
+    print("  StatefulSet Annotation Sync: {}".format("ENABLED" if STATEFULSET_ANNOTATION_SYNC else "disabled"))
     print(" Sending notifications to Slack: {}".format("ENABLED" if len(slack.SLACK_WEBHOOK_URL) > 0 else "disabled"))
     if len(slack.SLACK_WEBHOOK_URL) > 0:
         print("                  Slack channel: {}".format(slack.SLACK_CHANNEL))
@@ -450,6 +453,116 @@ def scale_up_pvc(namespace, name, new_size):
         print("  Exception raised while trying to scale up PVC {}.{} to {} ...".format(namespace, name, new_size))
         print(e)
         return False
+
+
+# Get all StatefulSets and extract volume autoscaler annotations from volumeClaimTemplates
+def get_statefulset_annotations():
+    """Returns a dict mapping PVC names to their StatefulSet template annotations"""
+    statefulset_annotations = {}
+    
+    try:
+        # Initialize Kubernetes API client for apps/v1
+        kubernetes_apps_api = kubernetes.client.AppsV1Api()
+        
+        # Get all StatefulSets from all namespaces
+        statefulsets = kubernetes_apps_api.list_stateful_set_for_all_namespaces(watch=False)
+        
+        for sts in statefulsets.items:
+            # Skip if no volumeClaimTemplates
+            if not sts.spec.volume_claim_templates:
+                continue
+                
+            for template in sts.spec.volume_claim_templates:
+                # Skip if no annotations
+                if not template.metadata or not template.metadata.annotations:
+                    continue
+                
+                # Extract volume autoscaler annotations
+                autoscaler_annotations = {}
+                for key, value in template.metadata.annotations.items():
+                    if key.startswith('volume.autoscaler.kubernetes.io/'):
+                        autoscaler_annotations[key] = value
+                
+                # If we found any autoscaler annotations, store them
+                if autoscaler_annotations:
+                    # StatefulSet PVCs are named: template_name-statefulset_name-ordinal
+                    # We'll store patterns to match against PVC names
+                    pattern_key = f"{sts.metadata.namespace}/{template.metadata.name}-{sts.metadata.name}"
+                    statefulset_annotations[pattern_key] = autoscaler_annotations
+                    
+                    if VERBOSE:
+                        print(f"Found StatefulSet annotations for pattern {pattern_key}: {autoscaler_annotations}")
+    
+    except Exception as e:
+        print(f"Error fetching StatefulSet annotations: {e}")
+        if VERBOSE:
+            traceback.print_exc()
+    
+    return statefulset_annotations
+
+
+# Sync StatefulSet volumeClaimTemplate annotations to matching PVCs
+def sync_statefulset_annotations_to_pvcs():
+    """Syncs volume autoscaler annotations from StatefulSet templates to their PVCs"""
+    if not STATEFULSET_ANNOTATION_SYNC:
+        return
+    
+    if VERBOSE:
+        print("Starting StatefulSet annotation sync...")
+    
+    # Get StatefulSet annotations
+    statefulset_annotations = get_statefulset_annotations()
+    if not statefulset_annotations:
+        if VERBOSE:
+            print("No StatefulSet annotations found to sync")
+        return
+    
+    # Get all PVCs
+    try:
+        pvcs = kubernetes_core_api.list_persistent_volume_claim_for_all_namespaces(watch=False)
+        
+        for pvc in pvcs.items:
+            # Check if this PVC matches any StatefulSet pattern
+            for pattern_key, annotations in statefulset_annotations.items():
+                namespace_pattern, name_pattern = pattern_key.split('/', 1)
+                
+                # Check if PVC belongs to this StatefulSet
+                # Pattern: template_name-statefulset_name-ordinal
+                if (pvc.metadata.namespace == namespace_pattern and 
+                    pvc.metadata.name.startswith(name_pattern + '-') and
+                    pvc.metadata.name[len(name_pattern)+1:].isdigit()):
+                    
+                    # Check if we need to update annotations
+                    needs_update = False
+                    if not pvc.metadata.annotations:
+                        pvc.metadata.annotations = {}
+                    
+                    for key, value in annotations.items():
+                        if pvc.metadata.annotations.get(key) != value:
+                            needs_update = True
+                            pvc.metadata.annotations[key] = value
+                    
+                    # Update PVC if needed
+                    if needs_update and not DRY_RUN:
+                        try:
+                            kubernetes_core_api.patch_namespaced_persistent_volume_claim(
+                                name=pvc.metadata.name,
+                                namespace=pvc.metadata.namespace,
+                                body={'metadata': {'annotations': pvc.metadata.annotations}}
+                            )
+                            print(f"Synced annotations to PVC {pvc.metadata.namespace}/{pvc.metadata.name}")
+                        except Exception as e:
+                            print(f"Error updating PVC {pvc.metadata.namespace}/{pvc.metadata.name}: {e}")
+                    elif needs_update and DRY_RUN:
+                        print(f"DRY RUN: Would sync annotations to PVC {pvc.metadata.namespace}/{pvc.metadata.name}")
+                    
+                    # Found a match, no need to check other patterns
+                    break
+    
+    except Exception as e:
+        print(f"Error syncing StatefulSet annotations: {e}")
+        if VERBOSE:
+            traceback.print_exc()
 
 
 # Test if prometheus is accessible, and gets the build version so we know which function(s) are available or not, primarily for present_over_time below

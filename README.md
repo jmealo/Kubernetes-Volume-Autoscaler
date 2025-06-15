@@ -187,6 +187,40 @@ spec:
   storageClassName: standard
 ```
 
+### StatefulSet Support
+
+When `STATEFULSET_ANNOTATION_SYNC` is enabled (default: true), the Volume Autoscaler will automatically sync volume autoscaler annotations from StatefulSet `volumeClaimTemplates` to their corresponding PVCs. This is useful because Kubernetes doesn't propagate annotation changes from the StatefulSet template to existing PVCs.
+
+Example StatefulSet configuration:
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  serviceName: prometheus
+  replicas: 3
+  template:
+    # ... pod template ...
+  volumeClaimTemplates:
+  - metadata:
+      name: prometheus-data
+      annotations:
+        # These annotations will be synced to all PVCs created from this template
+        volume.autoscaler.kubernetes.io/scale-above-percent: "85"
+        volume.autoscaler.kubernetes.io/scale-up-max-size: "300Gi"
+        volume.autoscaler.kubernetes.io/scale-up-percent: "10"
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 50Gi
+```
+
+The annotations will be automatically synced to PVCs named `prometheus-data-prometheus-0`, `prometheus-data-prometheus-1`, etc.
+
 
 ## Victoriametrics compatibility
 
@@ -351,6 +385,7 @@ The following environment variables are settable during development to alter the
 | VERBOSE                | false          | If we want to verbose mode, prints out the raw data from each PVC and its status/state instead of the default "" |
 | VICTORIAMETRICS_COMPAT  | false          | Whether to skip the prometheus check and assume victoriametrics |
 | SCOPE_ORGID_AUTH_HEADER |                | The auth header to set when using Mimir or Cortex see [Mimir docs](https://grafana.com/docs/mimir/latest/references/http-api/#authentication) |
+| STATEFULSET_ANNOTATION_SYNC | true       | Sync volume autoscaler annotations from StatefulSet volumeClaimTemplates to their PVCs. This allows you to configure autoscaling on the StatefulSet template rather than individual PVCs |
 
 
 # Contributors

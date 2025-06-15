@@ -4,6 +4,7 @@ import time
 from helpers import INTERVAL_TIME, PROMETHEUS_URL, DRY_RUN, VERBOSE, get_settings_for_prometheus_metrics, is_integer_or_float, print_human_readable_volume_dict
 from helpers import convert_bytes_to_storage, scale_up_pvc, testIfPrometheusIsAccessible, describe_all_pvcs, send_kubernetes_event
 from helpers import fetch_pvcs_from_prometheus, printHeaderAndConfiguration, calculateBytesToScaleTo, GracefulKiller, cache
+from helpers import sync_statefulset_annotations_to_pvcs
 from prometheus_client import start_http_server, Summary, Gauge, Counter, Info
 import slack
 import sys, traceback
@@ -56,6 +57,9 @@ if __name__ == "__main__":
             time.sleep(MAIN_LOOP_TIME)
             continue
         last_run = int(time.time())
+
+        # Sync StatefulSet annotations to PVCs if enabled
+        sync_statefulset_annotations_to_pvcs()
 
         # In every loop, fetch all our pvcs state from Kubernetes
         try:
