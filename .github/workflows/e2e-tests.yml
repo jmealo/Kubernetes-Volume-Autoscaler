@@ -13,6 +13,7 @@ env:
 
 jobs:
   e2e-tests:
+    name: E2E Tests (K8s ${{ matrix.k8s-version }}, ${{ matrix.metrics-backend }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -20,6 +21,7 @@ jobs:
     strategy:
       matrix:
         k8s-version: ["v1.28.0", "v1.29.0", "v1.30.0"]
+        metrics-backend: ["prometheus", "victoria-metrics"]
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -79,36 +81,71 @@ jobs:
         docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:e2e-${{ github.sha }}
         kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:e2e-${{ github.sha }} --name kind
 
-    - name: Install Prometheus (for metrics)
+    - name: Install Metrics Backend
       run: |
         kubectl create namespace monitoring
-        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-        helm repo update
-        helm install prometheus prometheus-community/kube-prometheus-stack \
-          --namespace monitoring \
-          --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-          --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
-          --wait
+        if [[ "${{ matrix.metrics-backend }}" == "prometheus" ]]; then
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          helm install prometheus prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+            --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+            --wait
+        else
+          helm repo add vm https://victoriametrics.github.io/helm-charts/
+          helm repo update
+          # Install Victoria Metrics with vmagent for scraping
+          helm install victoria-metrics vm/victoria-metrics-cluster \
+            --namespace monitoring \
+            --set vmselect.replicaCount=1 \
+            --set vminsert.replicaCount=1 \
+            --set vmstorage.replicaCount=1 \
+            --set vmstorage.persistentVolume.size=1Gi \
+            --wait
+          # Install vmagent for Prometheus-compatible scraping
+          helm install vmagent vm/victoria-metrics-agent \
+            --namespace monitoring \
+            --set remoteWriteUrls[0]="http://victoria-metrics-vminsert.monitoring.svc.cluster.local:8480/insert/0/prometheus/api/v1/write" \
+            --set config.global.scrape_interval=15s \
+            --wait
+        fi
 
     - name: Deploy Volume Autoscaler
       run: |
+        if [[ "${{ matrix.metrics-backend }}" == "prometheus" ]]; then
+          METRICS_URL="http://prometheus-kube-prometheus-prometheus.monitoring:9090"
+          VICTORIA_METRICS_FLAG=""
+        else
+          METRICS_URL="http://victoria-metrics-vmselect.monitoring:8481/select/0/prometheus"
+          VICTORIA_METRICS_FLAG="--set victoria_metrics_mode=true"
+        fi
+        
         helm install volume-autoscaler ./helm-chart \
           --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
           --set image.tag=e2e-${{ github.sha }} \
           --set image.pullPolicy=IfNotPresent \
-          --set prometheus_url=http://prometheus-kube-prometheus-prometheus.monitoring:9090 \
+          --set prometheus_url=$METRICS_URL \
           --set interval_time=30 \
           --set scale_up_percent=80 \
           --set scale_up_max_increment=50 \
           --set scale_up_min_increment=1 \
+          $VICTORIA_METRICS_FLAG \
           --wait
 
     - name: Run E2E tests
       run: |
-        kubectl apply -f .github/test-manifests/
+        # Apply namespace first and wait
+        kubectl apply -f .github/test-manifests/test-pvc.yaml
+        kubectl wait --for=condition=Ready namespace/test-autoscaler --timeout=30s || true
+        
+        # Apply pods after namespace is ready
+        kubectl apply -f .github/test-manifests/test-pods.yaml
+        
         # Verify kubectl connectivity
         kubectl cluster-info
         kubectl get nodes
+        
         # Run the E2E tests
         python .github/scripts/e2e-test.py
 
