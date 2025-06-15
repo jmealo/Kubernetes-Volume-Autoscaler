@@ -130,6 +130,7 @@ jobs:
           --set scale_up_percent=80 \
           --set scale_up_max_increment=50 \
           --set scale_up_min_increment=1 \
+          --set dry_run=false \
           $VICTORIA_METRICS_FLAG \
           --wait
 
