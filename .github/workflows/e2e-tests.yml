@@ -147,9 +147,18 @@ jobs:
         kubectl cluster-info
         kubectl get nodes
         
+        # Check autoscaler deployment
+        echo "=== Autoscaler deployment status ==="
+        kubectl get pods --all-namespaces | grep -i autoscaler || echo "No autoscaler pods found"
+        kubectl get deployment --all-namespaces | grep -i autoscaler || echo "No autoscaler deployments found"
+        
         # Show autoscaler logs in background during test
-        kubectl logs -f -l app.kubernetes.io/name=volume-autoscaler --tail=100 &
+        echo "Starting autoscaler log streaming..."
+        kubectl logs -f deployment/volume-autoscaler --all-containers --prefix --timestamps --tail=100 &
         LOGS_PID=$!
+        
+        # Give logs a moment to start streaming
+        sleep 2
         
         # Run the E2E tests
         python .github/scripts/e2e-test.py
