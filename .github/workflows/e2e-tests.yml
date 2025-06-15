@@ -137,7 +137,7 @@ jobs:
       run: |
         # Apply namespace first and wait
         kubectl apply -f .github/test-manifests/test-pvc.yaml
-        kubectl wait --for=condition=Ready namespace/test-autoscaler --timeout=30s || true
+        sleep 5
         
         # Apply pods after namespace is ready
         kubectl apply -f .github/test-manifests/test-pods.yaml
