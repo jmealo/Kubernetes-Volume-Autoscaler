@@ -9,7 +9,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: jmealo/kubernetes-volume-autoscaler
 
 jobs:
   e2e-tests:
@@ -96,6 +96,10 @@ jobs:
     - name: Run E2E tests
       run: |
         kubectl apply -f .github/test-manifests/
+        # Verify kubectl connectivity
+        kubectl cluster-info
+        kubectl get nodes
+        # Run the E2E tests
         python .github/scripts/e2e-test.py
 
     - name: Collect logs on failure
