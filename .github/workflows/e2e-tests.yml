@@ -137,6 +137,9 @@ jobs:
 
     - name: Run E2E tests
       run: |
+        # Delete test namespace if it exists from previous runs
+        kubectl delete namespace test-autoscaler --ignore-not-found=true --wait=false
+        
         # Apply namespace first and wait
         kubectl apply -f .github/test-manifests/test-pvc.yaml
         kubectl wait --for=condition=Ready namespace/test-autoscaler --timeout=30s || true
@@ -167,10 +170,15 @@ jobs:
         
         # Debug: Check if metrics are available
         echo "=== Checking metrics availability ==="
+        echo "Listing all available metrics with 'kubelet_volume' prefix:"
         if [[ "${{ matrix.metrics-backend }}" == "prometheus" ]]; then
-          kubectl exec -n monitoring deployment/prometheus-kube-prometheus-operator -- wget -q -O- "http://prometheus-kube-prometheus-prometheus:9090/api/v1/query?query=kubelet_volume_stats_used_bytes" | grep -o '"result":\[[^]]*\]' || echo "No volume metrics found"
+          kubectl run curl-test --rm -i --restart=Never --image=curlimages/curl -- \
+            curl -s "http://prometheus-kube-prometheus-prometheus.monitoring:9090/api/v1/label/__name__/values" | \
+            grep -o '"kubelet_volume[^"]*"' | head -20 || echo "No kubelet volume metrics found"
         else
-          kubectl exec -n monitoring deployment/vmagent-victoria-metrics-agent -- wget -q -O- "http://victoria-metrics-victoria-metrics-cluster-vmselect:8481/select/0/prometheus/api/v1/query?query=kubelet_volume_stats_used_bytes" | grep -o '"result":\[[^]]*\]' || echo "No volume metrics found"
+          kubectl run curl-test --rm -i --restart=Never --image=curlimages/curl -- \
+            curl -s "http://victoria-metrics-victoria-metrics-cluster-vmselect.monitoring:8481/select/0/prometheus/api/v1/label/__name__/values" | \
+            grep -o '"kubelet_volume[^"]*"' | head -20 || echo "No kubelet volume metrics found"
         fi
         
         # Run the E2E tests
