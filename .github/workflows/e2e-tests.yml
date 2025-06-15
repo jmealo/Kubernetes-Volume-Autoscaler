@@ -113,26 +113,27 @@ jobs:
 
     - name: Deploy Volume Autoscaler
       run: |
+        # Set the correct metrics URL based on backend
         if [[ "${{ matrix.metrics-backend }}" == "prometheus" ]]; then
           METRICS_URL="http://prometheus-kube-prometheus-prometheus.monitoring:9090"
-          VICTORIA_METRICS_FLAG=""
         else
           METRICS_URL="http://victoria-metrics-victoria-metrics-cluster-vmselect.monitoring.svc.cluster.local:8481/select/0/prometheus"
-          VICTORIA_METRICS_FLAG="--set victoria_metrics_mode=true"
         fi
         
-        helm install volume-autoscaler ./helm-chart \
-          --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
-          --set image.tag=e2e-${{ github.sha }} \
-          --set image.pullPolicy=IfNotPresent \
-          --set prometheus_url=$METRICS_URL \
-          --set interval_time=30 \
-          --set scale_up_percent=80 \
-          --set scale_up_max_increment=50 \
-          --set scale_up_min_increment=1 \
-          --set dry_run=false \
-          $VICTORIA_METRICS_FLAG \
-          --wait
+        # Replace placeholders in deployment manifest
+        sed -i "s|GITHUB_SHA|${{ github.sha }}|g" .github/test-manifests/autoscaler-deployment.yaml
+        sed -i "s|http://prometheus-kube-prometheus-prometheus.monitoring:9090|$METRICS_URL|g" .github/test-manifests/autoscaler-deployment.yaml
+        
+        # Add Victoria Metrics mode if needed
+        if [[ "${{ matrix.metrics-backend }}" == "victoria-metrics" ]]; then
+          sed -i '/VERBOSE/a\        - name: VICTORIAMETRICS_MODE\n          value: "true"' .github/test-manifests/autoscaler-deployment.yaml
+        fi
+        
+        # Deploy the autoscaler
+        kubectl apply -f .github/test-manifests/autoscaler-deployment.yaml
+        
+        # Wait for deployment to be ready
+        kubectl wait --for=condition=available deployment/volume-autoscaler --timeout=120s
 
     - name: Run E2E tests
       run: |
