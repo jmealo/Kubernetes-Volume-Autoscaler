@@ -1,0 +1,113 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        k8s-version: ["v1.28.0", "v1.29.0", "v1.30.0"]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to the Container registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:e2e-${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Create kind cluster
+      uses: helm/kind-action@v1
+      with:
+        version: v0.20.0
+        cluster_name: kind
+        config: .github/kind-config.yaml
+        node_image: kindest/node:${{ matrix.k8s-version }}
+        wait: 300s
+
+    - name: Test cluster info
+      run: |
+        kubectl cluster-info
+        kubectl get nodes
+        kubectl get storageclass
+
+    - name: Load test image to kind
+      run: |
+        kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:e2e-${{ github.sha }} --name kind
+
+    - name: Install Prometheus (for metrics)
+      run: |
+        kubectl create namespace monitoring
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo update
+        helm install prometheus prometheus-community/kube-prometheus-stack \
+          --namespace monitoring \
+          --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+          --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+          --wait
+
+    - name: Deploy Volume Autoscaler
+      run: |
+        helm install volume-autoscaler ./helm-chart \
+          --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+          --set image.tag=e2e-${{ github.sha }} \
+          --set image.pullPolicy=Never \
+          --set prometheus_url=http://prometheus-kube-prometheus-prometheus.monitoring:9090 \
+          --set interval_time=30 \
+          --set scale_up_percent=80 \
+          --set scale_up_max_increment=50 \
+          --set scale_up_min_increment=1 \
+          --wait
+
+    - name: Run E2E tests
+      run: |
+        kubectl apply -f .github/test-manifests/
+        python .github/scripts/e2e-test.py
+
+    - name: Collect logs on failure
+      if: failure()
+      run: |
+        echo "=== Volume Autoscaler Logs ==="
+        kubectl logs -l app.kubernetes.io/name=volume-autoscaler --tail=100
+        echo "=== Test Pod Logs ==="
+        kubectl logs -l test=e2e --tail=100
+        echo "=== Events ==="
+        kubectl get events --sort-by='.lastTimestamp'
+        echo "=== PVC Status ==="
+        kubectl get pvc -A
+        echo "=== PV Status ==="
+        kubectl get pv
