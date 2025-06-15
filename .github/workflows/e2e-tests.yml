@@ -104,10 +104,31 @@ jobs:
             --set vmstorage.persistentVolume.size=1Gi \
             --wait
           # Install vmagent for Prometheus-compatible scraping
+          cat <<EOF > /tmp/vmagent-values.yaml
+          remoteWrite:
+            - url: "http://victoria-metrics-victoria-metrics-cluster-vminsert.monitoring.svc.cluster.local:8480/insert/0/prometheus/"
+          config:
+            global:
+              scrape_interval: 15s
+            scrape_configs:
+              - job_name: 'kubernetes-pods'
+                kubernetes_sd_configs:
+                  - role: pod
+              - job_name: 'kubernetes-nodes'
+                kubernetes_sd_configs:
+                  - role: node
+              - job_name: 'kubernetes-cadvisor'
+                kubernetes_sd_configs:
+                  - role: node
+                relabel_configs:
+                  - source_labels: [__address__]
+                    regex: '(.*):10250'
+                    replacement: '\${1}:10255'
+                    target_label: __address__
+          EOF
           helm install vmagent vm/victoria-metrics-agent \
             --namespace monitoring \
-            --set remoteWriteUrls[0]="http://victoria-metrics-vminsert.monitoring.svc.cluster.local:8480/insert/0/prometheus/api/v1/write" \
-            --set config.global.scrape_interval=15s \
+            -f /tmp/vmagent-values.yaml \
             --wait
         fi
 
@@ -117,7 +138,7 @@ jobs:
           METRICS_URL="http://prometheus-kube-prometheus-prometheus.monitoring:9090"
           VICTORIA_METRICS_FLAG=""
         else
-          METRICS_URL="http://victoria-metrics-vmselect.monitoring:8481/select/0/prometheus"
+          METRICS_URL="http://victoria-metrics-victoria-metrics-cluster-vmselect.monitoring.svc.cluster.local:8481/select/0/prometheus"
           VICTORIA_METRICS_FLAG="--set victoria_metrics_mode=true"
         fi
         
