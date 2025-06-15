@@ -147,8 +147,19 @@ jobs:
         kubectl cluster-info
         kubectl get nodes
         
+        # Show autoscaler logs in background during test
+        kubectl logs -f -l app.kubernetes.io/name=volume-autoscaler --tail=100 &
+        LOGS_PID=$!
+        
         # Run the E2E tests
         python .github/scripts/e2e-test.py
+        TEST_EXIT_CODE=$?
+        
+        # Stop the log streaming
+        kill $LOGS_PID 2>/dev/null || true
+        
+        # Exit with the test exit code
+        exit $TEST_EXIT_CODE
 
     - name: Collect logs on failure
       if: failure()
