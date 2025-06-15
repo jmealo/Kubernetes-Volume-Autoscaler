@@ -14,6 +14,9 @@ env:
 jobs:
   e2e-tests:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         k8s-version: ["v1.28.0", "v1.29.0", "v1.30.0"]
@@ -73,6 +76,7 @@ jobs:
 
     - name: Load test image to kind
       run: |
+        docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:e2e-${{ github.sha }}
         kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:e2e-${{ github.sha }} --name kind
 
     - name: Install Prometheus (for metrics)
@@ -91,7 +95,7 @@ jobs:
         helm install volume-autoscaler ./helm-chart \
           --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
           --set image.tag=e2e-${{ github.sha }} \
-          --set image.pullPolicy=Never \
+          --set image.pullPolicy=IfNotPresent \
           --set prometheus_url=http://prometheus-kube-prometheus-prometheus.monitoring:9090 \
           --set interval_time=30 \
           --set scale_up_percent=80 \
