@@ -137,7 +137,7 @@ jobs:
       run: |
         # Apply namespace first and wait
         kubectl apply -f .github/test-manifests/test-pvc.yaml
-        sleep 5
+        kubectl wait --for=condition=Ready namespace/test-autoscaler --timeout=30s || true
         
         # Apply pods after namespace is ready
         kubectl apply -f .github/test-manifests/test-pods.yaml
@@ -152,13 +152,17 @@ jobs:
     - name: Collect logs on failure
       if: failure()
       run: |
+        echo "=== Volume Autoscaler Deployment ==="
+        kubectl get deployment -l app.kubernetes.io/name=volume-autoscaler -o yaml
         echo "=== Volume Autoscaler Logs ==="
         kubectl logs -l app.kubernetes.io/name=volume-autoscaler --tail=100
         echo "=== Test Pod Logs ==="
-        kubectl logs -l test=e2e --tail=100
+        kubectl logs -l test=e2e --tail=100 || true
         echo "=== Events ==="
-        kubectl get events --sort-by='.lastTimestamp'
+        kubectl get events --sort-by='.lastTimestamp' | tail -20
         echo "=== PVC Status ==="
-        kubectl get pvc -A
+        kubectl get pvc -A -o wide
         echo "=== PV Status ==="
-        kubectl get pv
+        kubectl get pv -o wide
+        echo "=== Storage Classes ==="
+        kubectl get storageclass -o yaml

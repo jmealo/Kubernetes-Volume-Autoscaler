@@ -48,6 +48,13 @@ def wait_for_pods_ready(namespace, timeout=300):
 def test_volume_autoscaling():
     """Main E2E test function"""
     namespace = "test-autoscaler"
+    
+    # Initial status check
+    print("Checking initial cluster state...")
+    print("Autoscaler pod status:")
+    run_command("kubectl get pods -l app.kubernetes.io/name=volume-autoscaler")
+    print("\nTest namespace resources:")
+    run_command("kubectl get all,pvc -n test-autoscaler")
     test_cases = [
         {
             "pvc_name": "test-pvc-1",
@@ -78,8 +85,27 @@ def test_volume_autoscaling():
         return False
     
     # Give the autoscaler time to run (configured with 30s interval)
-    print("\nWaiting 90 seconds for autoscaler to process volumes...")
-    time.sleep(90)
+    print("\nWaiting for autoscaler to process volumes...")
+    print("Autoscaler runs every 30 seconds, waiting for 3 cycles (90s total)")
+    
+    # Show progress and current PVC sizes
+    for i in range(9):
+        print(f"\nProgress: {i*10+10}/90 seconds...")
+        
+        # Show current PVC sizes every 30 seconds
+        if i % 3 == 2:  # At 30s, 60s, 90s
+            print("\nCurrent PVC sizes:")
+            for test in test_cases:
+                size = get_pvc_size(namespace, test["pvc_name"])
+                print(f"  {test['pvc_name']}: {size}")
+            
+            # Also check autoscaler pod logs
+            print("\nRecent autoscaler logs:")
+            logs = run_command("kubectl logs -l app.kubernetes.io/name=volume-autoscaler --tail=5 | grep -E '(Checking|Resizing|Error)' || true")
+            if logs:
+                print(logs)
+        
+        time.sleep(10)
     
     # Check results
     all_passed = True
