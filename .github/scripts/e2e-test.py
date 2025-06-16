@@ -168,17 +168,11 @@ def test_volume_autoscaling():
     
     # Check if autoscaler found PVCs
     if "Querying and found 0 valid PVCs" in logs:
-        print("\nWARNING: Autoscaler found 0 PVCs in Prometheus")
-        print("This is expected in kind clusters where kubelet_volume_stats metrics are not available")
-        print("The autoscaler is running correctly but cannot get volume usage data")
-        
-        # In this case, we should pass the test if autoscaler is healthy
-        if not critical_errors:
-            print("\n✓ Autoscaler is running without critical errors")
-            print("✓ PVCs are configured correctly")
-            print("✗ Volume metrics not available in kind cluster")
-            print("\nNOTE: In a real Kubernetes cluster with proper metrics, the autoscaler would resize these volumes.")
-            return True
+        print("\nERROR: Autoscaler found 0 PVCs in Prometheus")
+        print("Volume metrics should be available from the mock metrics server")
+        all_passed = False
+    elif not critical_errors:
+        print("No critical errors found in autoscaler logs")
     
     return all_passed
 

@@ -135,6 +135,15 @@ jobs:
         # Wait for deployment to be ready
         kubectl wait --for=condition=available deployment/volume-autoscaler --timeout=120s
 
+    - name: Deploy mock metrics server
+      run: |
+        # Deploy mock metrics server to provide volume stats
+        kubectl apply -f .github/test-manifests/metrics-mock.yaml
+        kubectl wait --for=condition=available deployment/metrics-mock -n monitoring --timeout=60s
+        
+        # Give ServiceMonitor time to be picked up
+        sleep 30
+
     - name: Run E2E tests
       run: |
         # Delete test namespace if it exists from previous runs
