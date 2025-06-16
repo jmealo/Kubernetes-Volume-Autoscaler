@@ -170,6 +170,9 @@ jobs:
         
         # Debug: Check if metrics are available
         echo "=== Checking metrics availability ==="
+        echo "Checking kubelet configuration:"
+        kubectl get nodes -o json | jq '.items[0].status.nodeInfo.kubeletVersion'
+        
         echo "Listing all available metrics with 'kubelet_volume' prefix:"
         if [[ "${{ matrix.metrics-backend }}" == "prometheus" ]]; then
           kubectl run curl-test --rm -i --restart=Never --image=curlimages/curl -- \
@@ -180,6 +183,12 @@ jobs:
             curl -s "http://victoria-metrics-victoria-metrics-cluster-vmselect.monitoring:8481/select/0/prometheus/api/v1/label/__name__/values" | \
             grep -o '"kubelet_volume[^"]*"' | head -20 || echo "No kubelet volume metrics found"
         fi
+        
+        # Check if any pod has volume metrics directly from kubelet
+        echo "Checking kubelet metrics endpoint directly:"
+        NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+        kubectl run curl-kubelet --rm -i --restart=Never --image=curlimages/curl -- \
+          curl -sk "https://${NODE_IP}:10250/metrics" | grep -c "kubelet_volume_stats" || echo "No volume stats in kubelet metrics"
         
         # Run the E2E tests
         python .github/scripts/e2e-test.py
