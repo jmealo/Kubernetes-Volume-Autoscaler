@@ -1,0 +1,228 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: jmealo/kubernetes-volume-autoscaler
+
+jobs:
+  e2e-tests:
+    name: E2E Tests (K8s ${{ matrix.k8s-version }}, ${{ matrix.metrics-backend }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        k8s-version: ["v1.28.0", "v1.29.0", "v1.30.0"]
+        metrics-backend: ["prometheus", "victoria-metrics"]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to the Container registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:e2e-${{ github.sha }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Create kind cluster
+      uses: helm/kind-action@v1
+      with:
+        version: v0.20.0
+        cluster_name: kind
+        config: .github/kind-config.yaml
+        node_image: kindest/node:${{ matrix.k8s-version }}
+        wait: 300s
+
+    - name: Test cluster info
+      run: |
+        kubectl cluster-info
+        kubectl get nodes
+        kubectl get storageclass
+
+    - name: Install local-path-provisioner with volume expansion support
+      run: |
+        kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.26/deploy/local-path-storage.yaml
+        kubectl patch storageclass local-path -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}, "allowVolumeExpansion": true}'
+        kubectl wait --for=condition=ready pod -n local-path-storage -l app=local-path-provisioner --timeout=60s
+
+    - name: Load test image to kind
+      run: |
+        docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:e2e-${{ github.sha }}
+        kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:e2e-${{ github.sha }} --name kind
+
+    - name: Install Metrics Backend
+      run: |
+        kubectl create namespace monitoring
+        if [[ "${{ matrix.metrics-backend }}" == "prometheus" ]]; then
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          helm install prometheus prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+            --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+            --wait
+        else
+          helm repo add vm https://victoriametrics.github.io/helm-charts/
+          helm repo update
+          # Install Victoria Metrics with vmagent for scraping
+          helm install victoria-metrics vm/victoria-metrics-cluster \
+            --namespace monitoring \
+            --set vmselect.replicaCount=1 \
+            --set vminsert.replicaCount=1 \
+            --set vmstorage.replicaCount=1 \
+            --set vmstorage.persistentVolume.size=1Gi \
+            --wait
+          # Install vmagent for Prometheus-compatible scraping
+          helm install vmagent vm/victoria-metrics-agent \
+            --namespace monitoring \
+            --set remoteWrite[0].url="http://victoria-metrics-victoria-metrics-cluster-vminsert.monitoring.svc.cluster.local:8480/insert/0/prometheus/" \
+            --set config.global.scrape_interval=15s \
+            --wait
+        fi
+
+    - name: Deploy Volume Autoscaler
+      run: |
+        # Set the correct metrics URL based on backend
+        if [[ "${{ matrix.metrics-backend }}" == "prometheus" ]]; then
+          METRICS_URL="http://prometheus-kube-prometheus-prometheus.monitoring:9090"
+        else
+          METRICS_URL="http://victoria-metrics-victoria-metrics-cluster-vmselect.monitoring.svc.cluster.local:8481/select/0/prometheus"
+        fi
+        
+        # Replace placeholders in deployment manifest
+        sed -i "s|GITHUB_SHA|${{ github.sha }}|g" .github/test-manifests/autoscaler-deployment.yaml
+        sed -i "s|http://prometheus-kube-prometheus-prometheus.monitoring:9090|$METRICS_URL|g" .github/test-manifests/autoscaler-deployment.yaml
+        
+        # Add Victoria Metrics mode if needed
+        if [[ "${{ matrix.metrics-backend }}" == "victoria-metrics" ]]; then
+          sed -i '/VERBOSE/a\        - name: VICTORIAMETRICS_MODE\n          value: "true"' .github/test-manifests/autoscaler-deployment.yaml
+        fi
+        
+        # Deploy the autoscaler
+        kubectl apply -f .github/test-manifests/autoscaler-deployment.yaml
+        
+        # Wait for deployment to be ready
+        kubectl wait --for=condition=available deployment/volume-autoscaler --timeout=120s
+
+    - name: Deploy mock metrics server
+      run: |
+        # Deploy mock metrics server to provide volume stats
+        kubectl apply -f .github/test-manifests/metrics-mock.yaml
+        kubectl wait --for=condition=available deployment/metrics-mock -n monitoring --timeout=60s
+        
+        # Give ServiceMonitor time to be picked up
+        sleep 30
+
+    - name: Run E2E tests
+      run: |
+        # Delete test namespace if it exists from previous runs
+        kubectl delete namespace test-autoscaler --ignore-not-found=true --wait=false
+        
+        # Apply namespace first and wait
+        kubectl apply -f .github/test-manifests/test-pvc.yaml
+        kubectl wait --for=condition=Ready namespace/test-autoscaler --timeout=30s || true
+        
+        # Apply pods after namespace is ready
+        kubectl apply -f .github/test-manifests/test-pods.yaml
+        
+        # Verify kubectl connectivity
+        kubectl cluster-info
+        kubectl get nodes
+        
+        # Check autoscaler deployment
+        echo "=== Autoscaler deployment status ==="
+        kubectl get pods --all-namespaces | grep -i autoscaler || echo "No autoscaler pods found"
+        kubectl get deployment --all-namespaces | grep -i autoscaler || echo "No autoscaler deployments found"
+        
+        # Show autoscaler logs in background during test
+        echo "Starting autoscaler log streaming..."
+        kubectl logs -f deployment/volume-autoscaler --all-containers --prefix --timestamps --tail=100 &
+        LOGS_PID=$!
+        
+        # Give logs a moment to start streaming
+        sleep 2
+        
+        # Wait for metrics to be collected (Victoria Metrics needs time to scrape)
+        echo "Waiting 60 seconds for metrics to be collected..."
+        sleep 60
+        
+        # Debug: Check if metrics are available
+        echo "=== Checking metrics availability ==="
+        echo "Checking kubelet configuration:"
+        kubectl get nodes -o json | jq '.items[0].status.nodeInfo.kubeletVersion'
+        
+        echo "Listing all available metrics with 'kubelet_volume' prefix:"
+        if [[ "${{ matrix.metrics-backend }}" == "prometheus" ]]; then
+          kubectl run curl-test --rm -i --restart=Never --image=curlimages/curl -- \
+            curl -s "http://prometheus-kube-prometheus-prometheus.monitoring:9090/api/v1/label/__name__/values" | \
+            grep -o '"kubelet_volume[^"]*"' | head -20 || echo "No kubelet volume metrics found"
+        else
+          kubectl run curl-test --rm -i --restart=Never --image=curlimages/curl -- \
+            curl -s "http://victoria-metrics-victoria-metrics-cluster-vmselect.monitoring:8481/select/0/prometheus/api/v1/label/__name__/values" | \
+            grep -o '"kubelet_volume[^"]*"' | head -20 || echo "No kubelet volume metrics found"
+        fi
+        
+        # Check if any pod has volume metrics directly from kubelet
+        echo "Checking kubelet metrics endpoint directly:"
+        NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+        kubectl run curl-kubelet --rm -i --restart=Never --image=curlimages/curl -- \
+          curl -sk "https://${NODE_IP}:10250/metrics" | grep -c "kubelet_volume_stats" || echo "No volume stats in kubelet metrics"
+        
+        # Run the E2E tests
+        python .github/scripts/e2e-test.py
+        TEST_EXIT_CODE=$?
+        
+        # Stop the log streaming
+        kill $LOGS_PID 2>/dev/null || true
+        
+        # Exit with the test exit code
+        exit $TEST_EXIT_CODE
+
+    - name: Collect logs on failure
+      if: failure()
+      run: |
+        echo "=== Volume Autoscaler Deployment ==="
+        kubectl get deployment -l app.kubernetes.io/name=volume-autoscaler -o yaml
+        echo "=== Volume Autoscaler Logs ==="
+        kubectl logs -l app.kubernetes.io/name=volume-autoscaler --tail=100
+        echo "=== Test Pod Logs ==="
+        kubectl logs -l test=e2e --tail=100 || true
+        echo "=== Events ==="
+        kubectl get events --sort-by='.lastTimestamp' | tail -20
+        echo "=== PVC Status ==="
+        kubectl get pvc -A -o wide
+        echo "=== PV Status ==="
+        kubectl get pv -o wide
+        echo "=== Storage Classes ==="
+        kubectl get storageclass -o yaml

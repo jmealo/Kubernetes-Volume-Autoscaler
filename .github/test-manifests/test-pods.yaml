@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod-1
+  namespace: test-autoscaler
+  labels:
+    test: e2e
+    app: filler-1
+spec:
+  containers:
+  - name: filler
+    image: busybox:latest
+    command: 
+    - /bin/sh
+    - -c
+    - |
+      echo "Starting to fill volume..."
+      # Fill to 75% of 1Gi (768MB)
+      dd if=/dev/zero of=/data/testfile bs=1M count=768
+      echo "Volume filled to ~75%"
+      # Keep pod running
+      sleep infinity
+    volumeMounts:
+    - name: data
+      mountPath: /data
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: test-pvc-1
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod-2
+  namespace: test-autoscaler
+  labels:
+    test: e2e
+    app: filler-2
+spec:
+  containers:
+  - name: filler
+    image: busybox:latest
+    command:
+    - /bin/sh
+    - -c
+    - |
+      echo "Starting to fill volume..."
+      # Fill to 85% of 2Gi (1740MB)
+      dd if=/dev/zero of=/data/testfile bs=1M count=1740
+      echo "Volume filled to ~85%"
+      # Keep pod running
+      sleep infinity
+    volumeMounts:
+    - name: data
+      mountPath: /data
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: test-pvc-2
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod-no-autoscale
+  namespace: test-autoscaler
+  labels:
+    test: e2e
+    app: filler-no-autoscale
+spec:
+  containers:
+  - name: filler
+    image: busybox:latest
+    command:
+    - /bin/sh
+    - -c
+    - |
+      echo "Starting to fill volume..."
+      # Fill to 90% of 1Gi (921MB) - this should NOT trigger autoscaling
+      dd if=/dev/zero of=/data/testfile bs=1M count=921
+      echo "Volume filled to ~90%"
+      # Keep pod running
+      sleep infinity
+    volumeMounts:
+    - name: data
+      mountPath: /data
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: test-pvc-no-autoscale

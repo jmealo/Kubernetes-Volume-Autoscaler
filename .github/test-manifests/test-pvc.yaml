@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-autoscaler
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-pvc-1
+  namespace: test-autoscaler
+  labels:
+    test: e2e
+    volume-autoscaler: "true"
+  annotations:
+    volume.autoscaler.kubernetes.io/scale-above-percent: "70"
+    volume.autoscaler.kubernetes.io/scale-up-percent: "150"
+    volume.autoscaler.kubernetes.io/scale-up-max-size: "107374182400"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-pvc-2
+  namespace: test-autoscaler
+  labels:
+    test: e2e
+    volume-autoscaler: "true"
+  annotations:
+    volume.autoscaler.kubernetes.io/scale-above-percent: "80"
+    volume.autoscaler.kubernetes.io/scale-up-min-increment: "2147483648"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-pvc-no-autoscale
+  namespace: test-autoscaler
+  labels:
+    test: e2e
+  annotations:
+    volume.autoscaler.kubernetes.io/ignore: "true"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: volume-autoscaler
+  labels:
+    app.kubernetes.io/name: volume-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: volume-autoscaler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: volume-autoscaler
+    spec:
+      serviceAccountName: volume-autoscaler
+      containers:
+      - name: autoscaler
+        image: ghcr.io/jmealo/kubernetes-volume-autoscaler:e2e-GITHUB_SHA
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PROMETHEUS_URL
+          value: "http://prometheus-kube-prometheus-prometheus.monitoring:9090"
+        - name: INTERVAL_TIME
+          value: "30"
+        - name: SCALE_UP_PERCENT
+          value: "80"
+        - name: SCALE_UP_MAX_INCREMENT
+          value: "50000000000"
+        - name: SCALE_UP_MIN_INCREMENT
+          value: "1000000000"
+        - name: DRY_RUN
+          value: "false"
+        - name: VERBOSE
+          value: "true"
+        - name: ENABLE_STATEFULSET_SUPPORT
+          value: "false"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: volume-autoscaler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: volume-autoscaler
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "patch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: volume-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: volume-autoscaler
+subjects:
+- kind: ServiceAccount
+  name: volume-autoscaler
+  namespace: default
